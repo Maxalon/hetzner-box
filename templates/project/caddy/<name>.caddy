@@ -1,0 +1,14 @@
+# <name>'s vhosts on the Hetzner box. Enabled with
+# `box enable <name> caddy/<name>.caddy`. Box snippets available:
+# (cloudflare_tls) (basic_headers) (tailnet_only). Snippets of your own are
+# prefixed <name>_ — every enabled fragment shares one namespace.
+<name>.example.com {
+	import cloudflare_tls
+	import basic_headers
+	encode zstd gzip
+
+	reverse_proxy <name>-app:8080 {
+		# Orange-cloud: {client_ip} is the real visitor (box trusted_proxies).
+		header_up X-Forwarded-For {client_ip}
+	}
+}

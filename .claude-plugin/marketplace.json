@@ -1,0 +1,11 @@
+{
+  "name": "hetzner-box",
+  "owner": { "name": "Maxalon" },
+  "plugins": [
+    {
+      "name": "hetzner-box",
+      "source": "./",
+      "description": "Hosting contract for the shared Hetzner box"
+    }
+  ]
+}

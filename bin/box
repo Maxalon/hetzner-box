@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Operator helper for the Hetzner box. Run on the box, from anywhere.
+# Contract and layout: skills/hetzner-box/SKILL.md.
+set -euo pipefail
+
+BOX=/srv/hetzner-box
+PROJECTS=/srv/projects
+SITES=/srv/edge-sites
+SECRETS=/srv/secrets
+BOX_ENV="$SECRETS/hetzner-box.env"
+EDGE=(docker compose -f "$BOX/edge/compose.yml" --env-file "$BOX_ENV")
+
+die() { echo "box: $*" >&2; exit 1; }
+
+usage() {
+	cat <<'EOF'
+box edge-up                  create missing edge networks, (re)build and start Caddy
+box reload                   check the config, then hot-reload Caddy
+box enable <name> <fragment> attach project <name> to the edge: create edge-<name>,
+                             link /srv/edge-sites/<name>.caddy -> /srv/projects/<name>/<fragment>
+box disable <name>           unlink the project's fragment and reload (network stays)
+box deploy <name>            box-deployed: git pull + compose up in /srv/projects/<name>, then reload
+box refresh <name>           CI-deployed: git pull the fragment clone, then reload (no compose)
+box install-slice            install systemd/personal.slice
+box status                   enabled fragments, edge networks, slice usage
+EOF
+}
+
+# Parse + resolve every directive and module without starting listeners or
+# provisioning the DNS provider (which would format-check the token).
+check() {
+	"${EDGE[@]}" exec -T caddy caddy adapt --config /etc/caddy/Caddyfile >/dev/null
+}
+
+reload() {
+	check || die "config does not adapt; running config left untouched"
+	"${EDGE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+}
+
+ensure_network() {
+	docker network inspect "$1" >/dev/null 2>&1 || docker network create "$1" >/dev/null
+}
+
+cmd=${1:-}
+shift || true
+case "$cmd" in
+edge-up)
+	mkdir -p "$SITES"
+	# Every external network compose.yml names must exist before `up`.
+	grep -oE '^\s+name: edge[-a-z0-9]*$' "$BOX/edge/compose.yml" | awk '{print $2}' |
+		while read -r net; do ensure_network "$net"; done
+	"${EDGE[@]}" up -d --build
+	;;
+reload)
+	reload
+	;;
+enable)
+	name=${1:?name}
+	fragment=${2:?fragment path inside the repo, e.g. caddy/$name.caddy}
+	target="$PROJECTS/$name/$fragment"
+	[[ -f $target ]] || die "$target not found (clone the project to $PROJECTS/$name first)"
+	ensure_network "edge-$name"
+	container=$("${EDGE[@]}" ps -q caddy)
+	docker network connect "edge-$name" "$container" 2>/dev/null || true
+	ln -sfn "$target" "$SITES/$name.caddy"
+	if ! reload; then
+		rm -f "$SITES/$name.caddy"
+		die "fragment rejected; link removed"
+	fi
+	grep -q "name: edge-$name\$" "$BOX/edge/compose.yml" ||
+		echo "box: now add edge-$name to edge/compose.yml networks (and commit), or the next edge-up drops it"
+	;;
+disable)
+	name=${1:?name}
+	rm -f "$SITES/$name.caddy"
+	reload
+	;;
+deploy)
+	name=${1:?name}
+	dir="$PROJECTS/$name"
+	[[ -d $dir/.git ]] || die "$dir is not a clone"
+	git -C "$dir" pull --ff-only
+	envargs=()
+	[[ -f $SECRETS/$name.env ]] && envargs=(--env-file "$SECRETS/$name.env")
+	[[ -f $dir/compose.yml ]] || die "$dir has no compose.yml (CI-deployed? use: box refresh $name)"
+	(cd "$dir" && docker compose -p "$name" "${envargs[@]}" up -d --build --remove-orphans)
+	if [[ -L $SITES/$name.caddy ]]; then reload; fi
+	;;
+refresh)
+	name=${1:?name}
+	dir="$PROJECTS/$name"
+	[[ -d $dir/.git ]] || die "$dir is not a clone"
+	git -C "$dir" pull --ff-only
+	reload
+	;;
+install-slice)
+	install -m 644 "$BOX/systemd/personal.slice" /etc/systemd/system/personal.slice
+	systemctl daemon-reload
+	systemctl start personal.slice
+	;;
+status)
+	echo "== enabled fragments"
+	find "$SITES" -maxdepth 1 -name "*.caddy" -printf "%f -> %l\n" 2>/dev/null || true
+	echo "== edge networks"
+	docker network ls --format '{{.Name}}' | grep -E '^edge(-|$)' || true
+	echo "== personal.slice"
+	systemctl status personal.slice --no-pager 2>/dev/null | sed -n '1,8p' || true
+	;;
+*)
+	usage
+	[[ -z $cmd ]] || exit 1
+	;;
+esac

@@ -1,0 +1,23 @@
+# <name> on the Hetzner box. Deployed with `box deploy <name>`
+# (git pull + `docker compose -p <name> --env-file /srv/secrets/<name>.env up -d`).
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    # Low priority + hard memory cap; Verdant Manor wins under contention.
+    cgroup_parent: personal.slice
+    # Secrets live outside the clone (the clone is mounted into Caddy).
+    env_file: /srv/secrets/<name>.env
+    networks:
+      edge:
+        # Caddy reaches the app by this alias, independent of container naming.
+        aliases: [<name>-app]
+    # HTTP needs NO published port: Caddy reaches it over edge-<name>.
+    # Raw TCP/UDP (game servers) publishes on the GAME IP only:
+    # ports:
+    #   - "${GAME_IP:?}:25565:25565"
+
+networks:
+  edge:
+    external: true
+    name: edge-<name>

@@ -1,0 +1,75 @@
+# ─── Hetzner box edge ───────────────────────────────────────
+# Box-level ONLY: global options, the snippets every project may import, and
+# the import of the enabled projects' fragments. No vhost lives here — each
+# project owns its own fragment in its own repo. Contract:
+# skills/hetzner-box/SKILL.md.
+{
+	email {env.ACME_EMAIL}
+
+	# Real client IPs behind Cloudflare. Orange-cloud hosts are reached from a
+	# Cloudflare edge, so `remote_ip` is Cloudflare's address. Trust Cloudflare's
+	# ranges — and ONLY them — to report the visitor in CF-Connecting-IP; Caddy's
+	# {client_ip} is then the real visitor for those hosts. A direct hit on the
+	# origin (or a grey-cloud tailnet host) is not trusted, so a forged header
+	# from it is ignored.
+	#
+	# Ranges: https://www.cloudflare.com/ips/ (fetched 2026-09-27). If Cloudflare
+	# adds one, requests through it fall back to the edge IP rather than
+	# trusting anything extra.
+	servers {
+		trusted_proxies static \
+			173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
+			141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
+			197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
+			104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 \
+			2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
+			2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		client_ip_headers CF-Connecting-IP
+	}
+}
+
+# ─── Box snippets (the contract projects import) ────────────
+
+# Cloudflare DNS-01 issuance. The token needs Zone -> DNS -> Edit on EVERY zone
+# a fragment serves; a zone missing from its scope fails issuance for that
+# zone's hosts silently.
+(cloudflare_tls) {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+}
+
+# Minimal headers for an API or a page with no CSP of its own. A project with a
+# browser UI writes its own header snippet (prefixed with its name).
+(basic_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+}
+
+# Tailnet-only gate. Caddy can't bind per interface from a bridged container,
+# so this filters by SOURCE IP at L7: anything outside the Tailscale range gets
+# a bare 404 and never reaches the upstream. Import at the top of a site block,
+# then wrap the real handlers in their own `handle {}` so the 404 wins. The
+# host's DNS record must be grey-cloud → the box's Tailscale IP.
+#
+# ⚠️  MUST stay `remote_ip`, never `client_ip`: `client_ip` honours the
+# Cloudflare trusted_proxies above, so anyone routing through Cloudflare could
+# claim a tailnet address in CF-Connecting-IP and walk past this gate.
+#
+# ⚠️  Host prerequisite: `tailscale set --snat-subnet-routes=false`. With
+# Tailscale's default SNAT, tailnet traffic forwarded into Docker arrives from
+# the bridge gateway, not 100.x, and this gate 404s everything (fails closed).
+(tailnet_only) {
+	@external not remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48
+	handle @external {
+		respond 404
+	}
+}
+
+# ─── Enabled projects ───────────────────────────────────────
+# One symlink per enabled project in /srv/edge-sites, pointing at the fragment
+# inside that project's clone under /srv/projects (`bin/box enable`).
+import /srv/edge-sites/*.caddy

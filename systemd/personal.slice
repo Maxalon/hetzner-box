@@ -1,0 +1,17 @@
+# Low-priority, capped home for every personal project's containers
+# (compose: `cgroup_parent: personal.slice`). Verdant Manor is NOT in it and
+# keeps the default weight of 100, so under contention it gets ~5x the CPU and
+# disk time; when the box is idle, personal projects can use all of it.
+# Memory cannot yield gracefully, so it gets a hard ceiling instead: the OOM
+# killer hits a personal container, never Verdant Manor.
+#
+# Install: bin/box install-slice   (copies here → /etc/systemd/system)
+[Unit]
+Description=Personal projects (low priority, capped)
+Before=slices.target
+
+[Slice]
+CPUWeight=20
+IOWeight=20
+MemoryHigh=5G
+MemoryMax=6G
