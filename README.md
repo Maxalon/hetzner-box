@@ -54,12 +54,14 @@ tailscale ip -4                                                                 
 git clone --filter=blob:none --sparse --branch main <verdantmanor-repo-url> /srv/projects/verdantmanor
 git -C /srv/projects/verdantmanor sparse-checkout set edge
 
-# 4. Dart Track's fragment: see "Dart Track" below (interim file until its
-#    repo carries caddy/darts.caddy)
+# 4. Dart Track: its deploy now writes to /srv/projects/darts (see "Dart Track"
+#    below). Create it for the deploy user, then merge/re-run its deploy:
+sudo install -d -o darttrack-deploy -g darttrack-deploy /srv/projects/darts
+#    ...after its Deploy run: ls /srv/projects/darts/caddy/darts.caddy
 
 # 5. Enable the fragments (links only; the new Caddy isn't up yet, so no reload)
 ln -s /srv/projects/verdantmanor/edge/verdantmanor.caddy /srv/edge-sites/verdantmanor.caddy
-ln -s /srv/projects/darts-interim/darts.caddy /srv/edge-sites/darts.caddy
+ln -s /srv/projects/darts/caddy/darts.caddy /srv/edge-sites/darts.caddy
 
 # 6. The slice
 sudo box install-slice
@@ -74,7 +76,7 @@ box status
 Then check: `curl -sSI https://verdantmanor.cards` → 200,
 `curl -sSI https://darts.kontrollzentrale.de/...` → the API, and from a tailnet
 device `https://cms.verdantmanor.cards/admin/login` → 200. Once all is well:
-`rm -rf /srv/verdantmanor_edge`.
+`rm -rf /srv/verdantmanor_edge /srv/dart-track-server`.
 
 **Rollback** (the old clone is untouched until you delete it):
 ```bash
@@ -84,29 +86,11 @@ docker compose -f /srv/verdantmanor_edge/edge/compose.yml -p verdantmanor_edge -
 
 ### Dart Track
 
-Dart Track stays in the org and keeps deploying its stack from its self-hosted
-runner, exactly as today: only its vhost moves. Its container must keep the
-alias `darttrack-api` on `edge-darts`, which it already has.
-
-Until its repo carries `caddy/darts.caddy`, the block lives in a plain local
-file, copied from the bottom of the old Caddyfile (still on the box until
-cleanup):
-
-```bash
-mkdir -p /srv/projects/darts-interim
-sed -n '/^darts.kontrollzentrale.de {/,$p' /srv/verdantmanor_edge/edge/conf/Caddyfile \
-  > /srv/projects/darts-interim/darts.caddy
-```
-
-Once the repo has it:
-
-```bash
-git clone --filter=blob:none --sparse <dart-track-repo-url> /srv/projects/darts   # deploy key, like verdantmanor
-git -C /srv/projects/darts sparse-checkout set caddy
-box enable darts caddy/darts.caddy      # replaces the interim link
-rm -rf /srv/projects/darts-interim
-```
-
-Then add `box refresh darts` as the last step of its deploy job, so a vhost
-change ships with the app. (`cgroup_parent: personal.slice` in its compose file
-is worth adding too.)
+Dart Track stays in the org and keeps deploying from its self-hosted runner.
+Its Deploy workflow copies `docker-compose.yml` and `caddy/darts.caddy` into
+`/srv/projects/darts` (formerly `/srv/dart-track-server`) and brings the stack
+up there. Its compose file pins the project name `dart-track-server`, so the
+move keeps the same containers and the same data volume. When its fragment is
+enabled (`/srv/edge-sites/darts.caddy` exists), the job ends with
+`box reload`. Before that, it skips the reload, so it can be merged ahead of
+the cutover.

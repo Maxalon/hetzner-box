@@ -39,19 +39,19 @@ Game IP (DNS-only) ──────────────────► raw
 | Path | What | Rule |
 |---|---|---|
 | `/srv/hetzner-box` | clone of this repo | pulled by hand |
-| `/srv/projects/<name>` | clone of each project's repo (a sparse clone of just the fragment is fine; private repos use a read-only deploy key) | **nothing secret**: the whole tree is mounted read-only into Caddy |
+| `/srv/projects/<name>` | the project's files on the box: a clone of its repo (sparse is fine; private repos use a read-only deploy key), or whatever its CI copies there | **nothing secret**: the whole tree is mounted read-only into Caddy |
 | `/srv/secrets/<name>.env` | that project's secrets + host values (e.g. `GAME_IP`) | mode 600, never inside a clone |
 | `/srv/edge-sites/<name>.caddy` | symlink → the project's fragment | the symlink is the on/off switch |
 
-`<name>` is one lowercase slug used everywhere: clone dir, compose project
+`<name>` is one lowercase slug used everywhere: project dir, compose project
 (`-p <name>`), network `edge-<name>`, secrets file, fragment symlink.
 
 Current projects:
 
 | name | repo | fragment | network | deploys via |
 |---|---|---|---|---|
-| `verdantmanor` | Kontrollzentrale/verdantmanor (org) | `edge/verdantmanor.caddy` | `edge` (historical name) | its own CI |
-| `darts` | Kontrollzentrale/Dart-Track-Server (org) | `caddy/darts.caddy` | `edge-darts` | its own CI |
+| `verdantmanor` | Kontrollzentrale/verdantmanor (org) | `edge/verdantmanor.caddy` | `edge` (historical name) | its own CI; fragment by `box refresh` |
+| `darts` | Kontrollzentrale/Dart-Track-Server (org) | `caddy/darts.caddy` | `edge-darts` | its own CI, which copies the fragment and runs `box reload` |
 | `archipelago` | planned | `caddy/archipelago.caddy` | `edge-archipelago` | `box deploy` |
 
 ## The contract: what a project repo has
@@ -82,23 +82,26 @@ The box side of a project is exactly two things: its network listed in
 
 ## Deploys
 
-A project's **stack** ships one of two ways; its **fragment** always ships the
-same way, from the clone in `/srv/projects/<name>`.
+Caddy always reads a project's fragment from `/srv/projects/<name>`. How it
+gets there, and how the stack ships, is one of:
 
 - **Box-deployed** (a manual `git pull`): `box deploy <name>` pulls the clone,
   runs `docker compose -p <name> up -d --build` from it, then checks and
   reloads Caddy.
-- **CI-deployed** (projects in the org with self-hosted runners: verdantmanor,
-  darts): the project's own pipeline deploys the stack wherever it always has.
-  The fragment follows with `box refresh <name>` (pull + check + reload, never
-  compose), run by hand or as the deploy job's last step.
+- **CI-deployed from a clone** (verdantmanor): the project's pipeline ships the
+  stack elsewhere; `/srv/projects/<name>` is a sparse clone of the fragment,
+  updated with `box refresh <name>` (pull + check + reload, never compose).
+- **CI-deployed by copy** (darts): the pipeline copies its compose file and
+  fragment into `/srv/projects/<name>` over SSH, brings the stack up there, and
+  ends with `box reload`. That works for a deploy user with only the `docker`
+  group: `reload` finds Caddy by its labels and reads no secrets.
 
 `bin/box` (on the box, `/srv/hetzner-box/bin/box`):
 
 ```bash
 box deploy <name>      # box-deployed: pull, compose up, reload
-box refresh <name>     # CI-deployed: pull the fragment, reload
-box reload             # after pulling this repo
+box refresh <name>     # CI-deployed from a clone: pull the fragment, reload
+box reload             # after pulling this repo, or a CI copy of a fragment
 box enable <name> caddy/<name>.caddy
 box disable <name>
 ```
