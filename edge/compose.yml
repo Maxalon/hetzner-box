@@ -1,0 +1,76 @@
+# The box's one Caddy. Its own compose project: a project rollout must never be
+# able to take :80/:443 down with it.
+#
+#   docker compose -f edge/compose.yml --env-file /srv/secrets/hetzner-box.env up -d
+#
+# (or just `bin/box edge-up`). Contract: skills/hetzner-box/SKILL.md.
+name: hetzner-box
+
+services:
+  caddy:
+    build:
+      context: .
+      args:
+        CADDY_VERSION: 2.11.9
+    image: hetzner-box-edge:local
+    restart: unless-stopped
+    ports:
+      # Bound to the MAIN IP and the TAILNET IP only. The game IP stays free
+      # for raw game ports and never answers TLS for any web host, so it can't
+      # be tied to the web projects by an SNI probe. Forgetting TAILNET_IP
+      # makes every `tailnet_only` host unreachable.
+      - "${EDGE_IP:?}:80:80"
+      - "${EDGE_IP:?}:443:443"
+      - "${EDGE_IP:?}:443:443/udp" # HTTP/3
+      - "${TAILNET_IP:?}:80:80"
+      - "${TAILNET_IP:?}:443:443"
+    environment:
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?}
+      ACME_EMAIL: ${ACME_EMAIL:?}
+    volumes:
+      # Directory mounts, never single-file mounts: a file mount pins the
+      # inode, so after `git pull` replaces the file, `caddy reload` silently
+      # applies the OLD config (cost an outage once).
+      - ./conf:/etc/caddy:ro
+      # Every project clone, read-only, at the SAME path as on the host, so
+      # the absolute symlinks in /srv/edge-sites resolve inside the container.
+      # Safe only because /srv/projects holds nothing secret (secrets live in
+      # /srv/secrets, which is never mounted here).
+      - /srv/projects:/srv/projects:ro
+      - /srv/edge-sites:/srv/edge-sites:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - edge-darts
+      - edge-archipelago
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+
+volumes:
+  # EXTERNAL, pointing at the volumes the box already had: the whole cert
+  # store. A fresh name would mint empty volumes and make Let's Encrypt
+  # re-issue everything on first boot. Renaming is a separate, deliberate
+  # operation (stop caddy, copy with an alpine container, flip these).
+  caddy_data:
+    external: true
+    name: kontrollzentrale_caddy_data
+  caddy_config:
+    external: true
+    name: kontrollzentrale_caddy_config
+
+# One network per project, shared ONLY between Caddy and that project, so no
+# project can reach another's containers directly. `bin/box enable <name>`
+# creates it; add it here too, or the next `edge-up` drops it.
+networks:
+  # verdantmanor's network keeps its historical name.
+  edge:
+    external: true
+    name: edge
+  edge-darts:
+    external: true
+    name: edge-darts
+  edge-archipelago:
+    external: true
+    name: edge-archipelago

@@ -1,0 +1,5 @@
+{
+  "name": "hetzner-box",
+  "description": "Hosting contract for the shared Hetzner box: one Caddy, many independent project repos",
+  "version": "1.0.0"
+}

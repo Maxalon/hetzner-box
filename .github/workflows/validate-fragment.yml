@@ -1,0 +1,65 @@
+# Reusable: checks ONE project's Caddy fragment against the real box config
+# (this repo's Caddyfile + snippets + Caddy build), so a fragment that would
+# break the box's reload fails in the project's CI instead.
+#
+#   jobs:
+#     caddy:
+#       uses: Maxalon/hetzner-box/.github/workflows/validate-fragment.yml@main
+#       with: { name: <name>, fragment: caddy/<name>.caddy }
+#
+# Uses `caddy adapt`, not `validate`: adapt parses everything and resolves
+# every directive and module by name with no credentials; validate would also
+# provision the Cloudflare module, which rejects a placeholder token.
+#
+# The config is COPIED into a throwaway image rather than bind-mounted: on a
+# self-hosted runner that shares the host's Docker daemon, a bind mount of the
+# workspace silently mounts an empty directory.
+name: validate-fragment
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: The project's box name (<name>)
+        required: true
+        type: string
+      fragment:
+        description: Path to the fragment in the calling repo
+        required: true
+        type: string
+      runs-on:
+        description: Runner label
+        required: false
+        type: string
+        default: ubuntu-latest
+      box-ref:
+        description: hetzner-box ref to validate against
+        required: false
+        type: string
+        default: main
+
+jobs:
+  adapt:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Maxalon/hetzner-box
+          ref: ${{ inputs.box-ref }}
+          path: .hetzner-box
+
+      - name: Build the box's Caddy, plus an image with the config baked in
+        env:
+          NAME: ${{ inputs.name }}
+          FRAGMENT: ${{ inputs.fragment }}
+        run: |
+          docker build -t hetzner-box-edge:check .hetzner-box/edge
+          printf 'FROM hetzner-box-edge:check\nCOPY .hetzner-box/edge/conf/Caddyfile /etc/caddy/Caddyfile\nCOPY %s /srv/edge-sites/%s.caddy\n' \
+            "$FRAGMENT" "$NAME" | docker build -t hetzner-box-edge:validate -f - .
+
+      - name: caddy adapt
+        run: |
+          docker run --rm -e CLOUDFLARE_API_TOKEN=x -e ACME_EMAIL=ci@example.invalid \
+            hetzner-box-edge:validate caddy adapt --config /etc/caddy/Caddyfile > /dev/null

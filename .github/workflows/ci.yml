@@ -1,0 +1,21 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  caddy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: caddy adapt (box config, no fragments)
+        run: |
+          docker build -t hetzner-box-edge:check edge
+          printf 'FROM hetzner-box-edge:check\nCOPY edge/conf/Caddyfile /etc/caddy/Caddyfile\nRUN mkdir -p /srv/edge-sites\n' \
+            | docker build -t hetzner-box-edge:validate -f - .
+          docker run --rm -e CLOUDFLARE_API_TOKEN=x -e ACME_EMAIL=ci@example.invalid \
+            hetzner-box-edge:validate caddy adapt --config /etc/caddy/Caddyfile > /dev/null
+      - name: compose renders
+        run: |
+          EDGE_IP=192.0.2.1 TAILNET_IP=100.64.0.1 CLOUDFLARE_API_TOKEN=x ACME_EMAIL=x \
+            docker compose -f edge/compose.yml config -q
+      - name: bin/box parses
+        run: bash -n bin/box && shellcheck bin/box
