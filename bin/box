@@ -12,6 +12,17 @@ EDGE=(docker compose -f "$BOX/edge/compose.yml" --env-file "$BOX_ENV")
 
 die() { echo "box: $*" >&2; exit 1; }
 
+# The running Caddy, found by its compose labels. reload/check/enable go
+# through this rather than `docker compose`, so they need no secrets: a
+# project's deploy user (docker group only) can run `box reload`.
+caddy() {
+	local c
+	c=$(docker ps -q --filter label=com.docker.compose.project=hetzner-box \
+		--filter label=com.docker.compose.service=caddy | head -n 1)
+	[[ -n $c ]] || die "the box Caddy is not running (box edge-up)"
+	echo "$c"
+}
+
 usage() {
 	cat <<'EOF'
 box edge-up                  create missing edge networks, (re)build and start Caddy
@@ -20,7 +31,7 @@ box enable <name> <fragment> attach project <name> to the edge: create edge-<nam
                              link /srv/edge-sites/<name>.caddy -> /srv/projects/<name>/<fragment>
 box disable <name>           unlink the project's fragment and reload (network stays)
 box deploy <name>            box-deployed: git pull + compose up in /srv/projects/<name>, then reload
-box refresh <name>           CI-deployed: git pull the fragment clone, then reload (no compose)
+box refresh <name>           CI-deployed from a clone: git pull it, then reload (no compose)
 box install-slice            install systemd/personal.slice
 box status                   enabled fragments, edge networks, slice usage
 EOF
@@ -29,12 +40,12 @@ EOF
 # Parse + resolve every directive and module without starting listeners or
 # provisioning the DNS provider (which would format-check the token).
 check() {
-	"${EDGE[@]}" exec -T caddy caddy adapt --config /etc/caddy/Caddyfile >/dev/null
+	docker exec "$(caddy)" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
 }
 
 reload() {
 	check || die "config does not adapt; running config left untouched"
-	"${EDGE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+	docker exec "$(caddy)" caddy reload --config /etc/caddy/Caddyfile
 }
 
 ensure_network() {
@@ -60,8 +71,7 @@ enable)
 	target="$PROJECTS/$name/$fragment"
 	[[ -f $target ]] || die "$target not found (clone the project to $PROJECTS/$name first)"
 	ensure_network "edge-$name"
-	container=$("${EDGE[@]}" ps -q caddy)
-	docker network connect "edge-$name" "$container" 2>/dev/null || true
+	docker network connect "edge-$name" "$(caddy)" 2>/dev/null || true
 	ln -sfn "$target" "$SITES/$name.caddy"
 	if ! reload; then
 		rm -f "$SITES/$name.caddy"
